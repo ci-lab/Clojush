@@ -24,7 +24,8 @@
     [clojure.contrib.math :as math]
     [clojure.contrib.seq-utils :as seq-utils]
     [clojure.walk :as walk]
-    [clojure.contrib.string :as string]))
+    [clojure.contrib.string :as string]
+    [clojure.contrib.duck-streams :as ds]))
 
 (import java.lang.Math)
 
@@ -60,7 +61,9 @@
 (def global-node-selection-tournament-size (atom 2))
 (def global-pop-when-tagging (atom true))
 (def global-reuse-errors (atom true))
-
+(def global-tag-limit (atom 1000))
+(def global-use-indirection (atom false))
+(def global-agent-output (atom (list)))
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; random code generator
 
@@ -1498,20 +1501,14 @@ acting as a no-op if the movement would produce an error."
   "Returns the key-val pair for the closest match to the given tag
 in the given state."
   [tag state]
-  ;; for positive tags : find first tag that's leq this-tag
-  ;; for negative tags : find first tag that's geq this-tag
-  ;; original implementation wrapped the list
-  (let [alist (vec (:tag state))] 
+  (let [alist (vec (:tag state))]
+    (print "|")
     (loop [associations alist this-tag tag]
-;;      (print '*)
-      ;;(print "associations:\t" (first associations) "this-tag:\t" this-tag)
+      (print (cond (neg? tag) '_ (pos? tag) '* :else 0))
       (if (or (>= (ffirst associations) (Math/abs this-tag))  ;; I've found the right tag
 	      (empty? (rest associations))) ;; or there are no more options
 	(or (and (>= this-tag 0) (first associations))
-	    (recur alist (try
-			   (Math/abs (mod (hash (second (first associations))) (first (last alist))))
-			   (catch java.lang.ArithmeticException e 1)
-			   (catch java.lang.NullPointerException e (assert (= 1 2))))))
+	    (recur alist (mod (hash (second (first associations))) @global-tag-limit)))
 	(recur (rest associations) this-tag)))))
 
 (defn bin-string-to-int [bin-string]
@@ -1542,14 +1539,21 @@ the following forms:
      (= (first iparts) "tag")
      ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
      (let [source-type (read-string (str ":" (nth iparts 2)))
-	   the-tag (Math/abs (bin-string-to-int (nth iparts 4)))]
-       (if (empty? (source-type state))
-	 state
+	   int-tag  (bin-string-to-int (nth iparts 4))
+	   ;; if state is empty, provide a seed state to avoid NPEs -> return state :
+	   state-with-seed (if (:tag state) state (assoc state :tag (assoc (sorted-map) 0 0)))]
+       (if (empty? (source-type state-with-seed))
+	 state-with-seed
 	 ((if @global-pop-when-tagging pop-item (fn [type state] state))
 	  source-type
-	  (assoc state :tag (assoc (or (:tag state) (sorted-map))
-			      the-tag 
-			      (first (source-type state)))))))
+	  (assoc state-with-seed :tag (assoc (:tag state-with-seed)
+					(or
+					 ;; if direct
+					 (and (pos? int-tag) int-tag)
+					 ;; if indirect
+					 (mod (hash (second (closest-association int-tag state-with-seed)))
+					      @global-tag-limit))
+					(first (source-type state-with-seed)))))))
      ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
      ;;     i ;; if it's of the form untag_<number>: REMOVE TAG ASSOCIATION
      (= (first iparts) "untag")
@@ -1570,8 +1574,9 @@ the following forms:
 	 (let [the-tag (bin-string-to-int (nth iparts 2))] ;; it's just tagged_<number>, result->exec
 	   (push-item (second (closest-association the-tag state)) :exec state)))))))
 
-(defn rand-signed-int-string [limit]
-  (let [bin-string (Integer/toBinaryString (* (if (> (rand 1) 0.5) 1 -1) (lrand-int limit)))]
+(defn rand-signed-int-string []
+  (let [bin-string (Integer/toBinaryString (inc (* (if (and @global-use-indirection (> (lrand 1) 0.5)) -1 1)
+						   (lrand-int @global-tag-limit))))]
     (reduce str (concat (repeat (- 32 (.length bin-string)) 0) (map str bin-string)))))
 
 
@@ -1579,32 +1584,32 @@ the following forms:
   "Returns a function which, when called on no arguments, returns a symbol of the form
 tag_<type>_<number> where type is one of the specified types and number is in the range 
 from 0 to the specified limit (exclusive)."
-  [types limit]
+  [types]
   (fn [] (symbol (str "tag_"
                    (name (rand-nth types))
                    "_"
-                   (rand-signed-int-string limit)))))
+                   (rand-signed-int-string)))))
 
 (defn untag-instruction-erc
   "Returns a function which, when called on no arguments, returns a symbol of the form
 untag_<number> where number is in the range from 0 to the specified limit (exclusive)."
-  [limit]
+  []
   (fn [] (symbol (str "untag_"
-		      (rand-signed-int-string limit)))))
+		      (rand-signed-int-string)))))
 
 (defn tagged-instruction-erc
   "Returns a function which, when called on no arguments, returns a symbol of the form
 tagged_<number> where number is in the range from 0 to the specified limit (exclusive)."
-  [limit]
+  []
   (fn [] (symbol (str "tagged_"
-		      (rand-signed-int-string limit)))))
+		      (rand-signed-int-string)))))
 
 (defn tagged-code-instruction-erc
   "Returns a function which, when called on no arguments, returns a symbol of the form
 tagged_code_<number> where number is in the range from 0 to the specified limit (exclusive)."
-  [limit]
+  []
   (fn [] (symbol (str "tagged_code_"
-		      (rand-signed-int-string limit)))))
+		      (rand-signed-int-string)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; tagged-code macros
@@ -1636,13 +1641,13 @@ call expanded on the exec stack."
 (defn tagged-code-macro-erc
   "Returns a function which, when called on no arguments, returns a tagged-code macro,
 which is a map."
-  ([instruction tag-limit num-argument-tags num-result-tags additional-arg-generator]
+  ([instruction num-argument-tags num-result-tags additional-arg-generator]
     (fn [] {:tagged_code_macro true :instruction instruction
-            :argument_tags (repeatedly num-argument-tags #(rand-signed-int-string tag-limit))
+            :argument_tags (repeatedly num-argument-tags #(rand-signed-int-string))
             :additional_args (additional-arg-generator)
-            :result_tags (repeatedly num-result-tags #(rand-signed-int-string tag-limit))}))
-  ([instruction tag-limit num-argument-tags num-result-tags]
-     (tagged-code-macro-erc instruction tag-limit num-argument-tags num-result-tags (fn [] ()))))
+            :result_tags (repeatedly num-result-tags #(rand-signed-int-string))}))
+  ([instruction num-argument-tags num-result-tags]
+     (tagged-code-macro-erc instruction num-argument-tags num-result-tags (fn [] ()))))
 
 (defn abbreviate-tagged-code-macros
   "Returns a copy of program with macros abbreviated as symbols. The returned program will
@@ -1870,6 +1875,8 @@ by @global-node-selection-method."
         (println "Max copy number of one program: " (apply max (vals frequency-map)))
         (println "Min copy number of one program: " (apply min (vals frequency-map)))
         (println "Median copy number: " (nth (sort (vals frequency-map)) (Math/floor (/ (count frequency-map) 2)))))
+      (flush)(printf "\nAgent-output:\tCount:%d\n%s\n" (count @global-agent-output) (apply str @global-agent-output))(flush)
+      (reset! global-agent-output (list))
       (printf "\n;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;\n\n")
       (flush)
       (problem-specific-report best population generation error-function report-simplifications)
@@ -1957,13 +1964,17 @@ subprogram of parent2."
   [i error-function rand-gen]
 ; (println "XXXXXX") (flush) ;***
   (binding [thread-local-random-generator rand-gen]
-    (let [p (:program i)
-          e (if (and (seq? (:errors i)) @global-reuse-errors)
-              (:errors i)
-              (error-function p))
+    (let [str-writer (new java.io.StringWriter)
+	  p (:program i)
+          e (binding [*out* str-writer]
+	      (if (and (seq? (:errors i)) @global-reuse-errors)
+		(:errors i)
+		(error-function p)))
           te (if (and (number? (:total-error i)) @global-reuse-errors)
                (:total-error i)
                (keep-number-reasonable (reduce + e)))]
+      (swap! global-agent-output conj (.toString str-writer))
+      (.flush str-writer)
 ;(println te)(flush) ;***
       (make-individual :program p :errors e :total-error te 
         :history (if maintain-histories (cons te (:history i)) (:history i))
@@ -2078,7 +2089,7 @@ example."
              evalpush-limit evalpush-time-limit node-selection-method node-selection-leaf-probability
              node-selection-tournament-size pop-when-tagging gaussian-mutation-probability 
              gaussian-mutation-per-number-mutation-probability gaussian-mutation-standard-deviation
-	     reuse-errors problem-specific-report]
+	     reuse-errors problem-specific-report use-indirection tag-limit]
       :or {error-function (fn [p] '(0)) ;; pgm -> list of errors (1 per case)
            error-threshold 0
            population-size 1000
@@ -2110,6 +2121,8 @@ example."
            gaussian-mutation-standard-deviation 0.1
 	   reuse-errors true
 	   problem-specific-report default-problem-specific-report
+	   use-indirection false
+	   tag-limit 1000
            }}]
   ;; set globals from parameters
   (reset! global-atom-generators atom-generators)
@@ -2121,6 +2134,8 @@ example."
   (reset! global-node-selection-tournament-size node-selection-tournament-size)
   (reset! global-pop-when-tagging pop-when-tagging)
   (reset! global-reuse-errors reuse-errors)
+  (reset! global-use-indirection use-indirection)
+  (reset! global-tag-limit tag-limit)
   (printf "\nStarting PushGP run.\n\n") (flush)
   (print-params 
     (error-function error-threshold population-size max-points atom-generators max-generations 
@@ -2130,7 +2145,7 @@ example."
       tournament-size report-simplifications final-report-simplifications
       trivial-geography-radius decimation-ratio decimation-tournament-size evalpush-limit
       evalpush-time-limit node-selection-method node-selection-tournament-size
-      node-selection-leaf-probability pop-when-tagging reuse-errors
+      node-selection-leaf-probability pop-when-tagging reuse-errors use-indirection tag-limit
       ))
   (printf "\nGenerating initial population...\n") (flush)
   (let [pop-agents (vec (doall (for [_ (range population-size)] 
