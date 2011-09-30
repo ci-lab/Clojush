@@ -3,10 +3,11 @@
 ;; Lee Spector, lspector@hampshire.edu, 2010
 
 (ns examples.lawnmower
-  (:require [clojush]
+  (:require [clojush :exclude '-main]
 	    [clojure.contrib.math])
-  (:use [clojush]
-    [clojure.contrib.math]))
+  (:use [clojush :exclude '-main]
+	[clojure.contrib.math])
+  (:gen-class))
 
 ;;;;;;;;;;;;
 ;; Koza's lawnmower problem, described in Chapter 8 of Genetic Programming II:
@@ -215,14 +216,32 @@
   :evalpush-limit 1000)
 
 ;; standard 8x8 lawnmower problem but with tags
-(pushgp
+#_(pushgp
   :error-function (lawnmower-fitness 8 8 100)
   :atom-generators (list 'left 'mow 'v8a 'frog (fn [] [(rand-int 8) (rand-int 8)])
-                     (tag-instruction-erc [:exec] 1000)
-                     (tagged-instruction-erc 1000))
+                     (tag-instruction-erc [:exec])
+                     (tagged-instruction-erc))
+  :use-indirection true
   :mutation-probability 0.3
   :crossover-probability 0.3
   :simplification-probability 0.3
   :reproduction-simplifications 10
   :max-points 200
   :evalpush-limit 1000)
+
+(defn -main [& args]
+  (let [argmap (zipmap (map #(keyword (reduce str (drop 2 %))) (take-nth 2 args))
+		       (map read-string (take-nth 2 (drop 1 args))))
+	size (or (:size argmap) 8)
+	limit (or (:move-limit argmap) 100)
+	args (-> argmap
+		 (assoc :max-points (* 10 limit))
+		 (assoc :eval-push-limit (* 10 limit))
+		 (assoc :error-function (lawnmower-fitness 8 size limit))
+		 (assoc :atom-generators (list 'left 'mow 'frog 'v8a 
+					       (fn [] [(rand-int 8)(rand-int size)])
+					       (tag-instruction-erc [:exec])
+					       (tagged-instruction-erc))))]
+    (print args)
+    (pushgp-map args))
+  (System/exit 0))	    

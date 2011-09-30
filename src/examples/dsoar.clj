@@ -9,9 +9,9 @@
 ;; This version was written by Brian Martin in 2010-2011.
 
 (ns examples.dsoar
-  (:require [clojush]
+  (:require [clojush :exclude '-main]
 	    [clojure.contrib.math])
-  (:use [clojush] 
+  (:use [clojush :exclude '-main] 
     [clojure.contrib.math]))
 
 (in-ns 'clojush)
@@ -264,15 +264,34 @@
   :evalpush-limit 1000)
 
 ;; standard 8x8 dsoar problem but with tags
-(pushgp
+#_(pushgp
   :error-function (mopper-fitness 8 8 100)
   :atom-generators (list 'if-dirty 'if-obstacle 'left 'mop 'v8a 'frog
                      (fn [] [(rand-int 8) (rand-int 8)])
-                     (tag-instruction-erc [:exec] 1000)
-                     (tagged-instruction-erc 1000))
+                     (tag-instruction-erc [:exec])
+                     (tagged-instruction-erc))
   :mutation-probability 0.3
   :crossover-probability 0.3
   :simplification-probability 0.3
   :reproduction-simplifications 10
   :max-points 200
   :evalpush-limit 1000)
+
+(defn -main [& args]
+  (let [argmap (zipmap (map #(keyword (reduce str (drop 2 %))) (take-nth 2 args))
+		       (map read-string (take-nth 2 (drop 1 args))))
+	size (or (:size argmap) 4)
+	limit (or (:move-limit argmap) 50)
+	args (-> argmap
+		 (assoc :max-points (* 10 limit))
+		 (assoc :eval-push-limit (* 10 limit))
+		 (assoc :error-function (mopper-fitness 8 size limit))
+		 (assoc :atom-generators (list 'if-dirty 'if-obstacle 'left 'mop 'v8a 'frog
+					       (fn [] [(rand-int 8)(rand-int size)])
+					       (tag-instruction-erc [:exec])
+					       (tagged-instruction-erc))))]
+    (pushgp-map args))
+  (System/exit 0))
+
+		      
+			     
