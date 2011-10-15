@@ -49,6 +49,7 @@
 (def maintain-histories true) ;; histories are lists of total-error values for ancestors
 (def maintain-ancestors false) ;; if true save all ancestors in each individual (costly)
 (def print-ancestors-of-solution false)
+(def tag-limit (java.lang.Integer/MAX_VALUE))
 
 ;; The following globals require values because they are used in Push instructions but they
 ;; may be reset by arguments to pushgp or other systems that use Push.
@@ -61,7 +62,6 @@
 (def global-node-selection-tournament-size (atom 2))
 (def global-pop-when-tagging (atom true))
 (def global-reuse-errors (atom true))
-(def global-tag-limit (atom 1000))
 (def global-use-indirection (atom false))
 (def global-agent-output (atom (list)))
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -1501,15 +1501,18 @@ acting as a no-op if the movement would produce an error."
   "Returns the key-val pair for the closest match to the given tag
 in the given state."
   [tag state]
-  (let [alist (vec (:tag state))]
-    (print "|")
-    (loop [associations alist this-tag tag]
-      (print (cond (neg? tag) '_ (pos? tag) '* :else 0))
-      (if (or (>= (ffirst associations) (Math/abs this-tag))  ;; I've found the right tag
-	      (empty? (rest associations))) ;; or there are no more options
-	(or (and (>= this-tag 0) (first associations))
-	    (recur alist (mod (hash (second (first associations))) @global-tag-limit)))
-	(recur (rest associations) this-tag)))))
+  (let [alist (conj (vec (:tag state)) (first (:tag state)))
+	tag-type (cond (neg? tag) '_ (pos? tag) '* :else 0)
+	agent-writer (java.lang.StringBuffer. "|")
+	closest (loop [associations alist this-tag tag]
+		  (.append agent-writer tag-type)
+		  (if (or (>= (ffirst associations) (Math/abs this-tag))  ;; I've found the right tag
+			  (empty? (rest associations))) ;; or there are no more options
+		    (or (and (>= this-tag 0) (first associations))
+			(recur alist (mod (hash (second (first associations))) tag-limit)))
+		    (recur (rest associations) this-tag)))]
+    (swap! global-agent-output conj (.toString agent-writer))
+    closest))
 
 (defn bin-string-to-int [bin-string]
   (assert (= (.length bin-string) 32))
@@ -1552,7 +1555,7 @@ the following forms:
 					 (and (pos? int-tag) int-tag)
 					 ;; if indirect
 					 (mod (hash (second (closest-association int-tag state-with-seed)))
-					      @global-tag-limit))
+					      tag-limit))
 					(first (source-type state-with-seed)))))))
      ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
      ;;     i ;; if it's of the form untag_<number>: REMOVE TAG ASSOCIATION
@@ -1576,7 +1579,7 @@ the following forms:
 
 (defn rand-signed-int-string []
   (let [bin-string (Integer/toBinaryString (inc (* (if (and @global-use-indirection (> (lrand 1) 0.5)) -1 1)
-						   (lrand-int @global-tag-limit))))]
+						   (lrand-int tag-limit))))]
     (reduce str (concat (repeat (- 32 (.length bin-string)) 0) (map str bin-string)))))
 
 
@@ -1875,7 +1878,9 @@ by @global-node-selection-method."
         (println "Max copy number of one program: " (apply max (vals frequency-map)))
         (println "Min copy number of one program: " (apply min (vals frequency-map)))
         (println "Median copy number: " (nth (sort (vals frequency-map)) (Math/floor (/ (count frequency-map) 2)))))
-      (flush)(printf "\nAgent-output:\tCount:%d\n%s\n" (count @global-agent-output) (apply str @global-agent-output))(flush)
+      (flush)
+      (.println *err* (str "Generation:" generation))
+      (.println *err* (str "Agent-output:" (apply str @global-agent-output)))
       (reset! global-agent-output (list))
       (printf "\n;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;\n\n")
       (flush)
@@ -1966,15 +1971,12 @@ subprogram of parent2."
   (binding [thread-local-random-generator rand-gen]
     (let [str-writer (new java.io.StringWriter)
 	  p (:program i)
-          e (binding [*out* str-writer]
-	      (if (and (seq? (:errors i)) @global-reuse-errors)
-		(:errors i)
-		(error-function p)))
+          e (if (and (seq? (:errors i)) @global-reuse-errors)
+	      (:errors i)
+	      (error-function p))
           te (if (and (number? (:total-error i)) @global-reuse-errors)
                (:total-error i)
                (keep-number-reasonable (reduce + e)))]
-      (swap! global-agent-output conj (.toString str-writer))
-      (.flush str-writer)
 ;(println te)(flush) ;***
       (make-individual :program p :errors e :total-error te 
         :history (if maintain-histories (cons te (:history i)) (:history i))
@@ -2089,7 +2091,7 @@ example."
              evalpush-limit evalpush-time-limit node-selection-method node-selection-leaf-probability
              node-selection-tournament-size pop-when-tagging gaussian-mutation-probability 
              gaussian-mutation-per-number-mutation-probability gaussian-mutation-standard-deviation
-	     reuse-errors problem-specific-report use-indirection tag-limit]
+	     reuse-errors problem-specific-report use-indirection]
       :or {error-function (fn [p] '(0)) ;; pgm -> list of errors (1 per case)
            error-threshold 0
            population-size 1000
@@ -2122,7 +2124,6 @@ example."
 	   reuse-errors true
 	   problem-specific-report default-problem-specific-report
 	   use-indirection false
-	   tag-limit 1000
            }}]
   ;; set globals from parameters
   (reset! global-atom-generators atom-generators)
@@ -2135,7 +2136,6 @@ example."
   (reset! global-pop-when-tagging pop-when-tagging)
   (reset! global-reuse-errors reuse-errors)
   (reset! global-use-indirection use-indirection)
-  (reset! global-tag-limit tag-limit)
   (printf "\nStarting PushGP run.\n\n") (flush)
   (print-params 
     (error-function error-threshold population-size max-points atom-generators max-generations 
@@ -2145,7 +2145,7 @@ example."
       tournament-size report-simplifications final-report-simplifications
       trivial-geography-radius decimation-ratio decimation-tournament-size evalpush-limit
       evalpush-time-limit node-selection-method node-selection-tournament-size
-      node-selection-leaf-probability pop-when-tagging reuse-errors use-indirection tag-limit
+      node-selection-leaf-probability pop-when-tagging reuse-errors use-indirection 
       ))
   (printf "\nGenerating initial population...\n") (flush)
   (let [pop-agents (vec (doall (for [_ (range population-size)] 
@@ -2239,5 +2239,17 @@ of nil values in execute-instruction, do see if any instructions are introducing
    This allows one to run an example with a call from the OS shell prompt like:
        lein run examples.simple-regression"
   [& args]
-  (use (symbol (first args)))
+  (use (vector (symbol (first args)) :exclude ['run]))
+  (let [fname (reduce str (drop-last 1 (interleave (map #(if (= (first (str %)) \-)
+							   (reduce str (seq (drop 2 (str %))))
+							   (str %))
+							args)
+						   (repeat'-))))]
+    (with-open [out (java.io.PrintWriter. (java.io.FileOutputStream. (java.io.File. (str "output/" fname ".out"))))
+		err (java.io.PrintWriter. (java.io.FileOutputStream. (java.io.File. (str "output/" fname ".err"))))]
+      (binding [*out* out *err* err]
+	;;(def run (get (ns-publics (symbol (first args))) 'run))
+	((eval (symbol (str (first args) "/run"))) (rest args))
+	(.write *out* (.toString out))
+	(.write *err* (.toString err)))))
   (System/exit 0))

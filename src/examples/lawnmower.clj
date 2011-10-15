@@ -229,7 +229,7 @@
   :max-points 200
   :evalpush-limit 1000)
 
-(defn -main [& args]
+(defn run [args]
   (let [argmap (zipmap (map #(keyword (reduce str (drop 2 %))) (take-nth 2 args))
 		       (map read-string (take-nth 2 (drop 1 args))))
 	size (or (:size argmap) 8)
@@ -242,6 +242,4 @@
 					       (fn [] [(rand-int 8)(rand-int size)])
 					       (tag-instruction-erc [:exec])
 					       (tagged-instruction-erc))))]
-    (print args)
-    (pushgp-map args))
-  (System/exit 0))	    
+    (pushgp-map args)))
