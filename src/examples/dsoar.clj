@@ -275,20 +275,16 @@
   :evalpush-limit 1000)
 
 (defn run [args]
-  (let [argmap (if args
-		(zipmap (map #(keyword (reduce str (drop 2 %))) (take-nth 2 args))
-			(map read-string (take-nth 2 (drop 1 args))))
-		{})
-       size (or (:size argmap) 4)
-       limit (or (:move-limit argmap) 50)
-       args (-> argmap
-		(assoc :max-points (* 10 limit))
-		(assoc :eval-push-limit (* 10 limit))
-		(assoc :error-function (mopper-fitness 8 size limit))
-		(assoc :atom-generators (list 'if-dirty 'if-obstacle 'left 'mop 'v8a 'frog
-					      (fn [] [(rand-int 8)(rand-int size)])
-					      (clojush/tag-instruction-erc [:exec])
-					      (clojush/tagged-instruction-erc))))]
-    (clojush/pushgp-map args)))
+  (let [size (or (:size args) 4)
+       limit (or (:move-limit args) 50)
+       argmap (-> args
+		  (assoc :max-points (* 10 limit))
+		  (assoc :eval-push-limit (* 10 limit))
+		  (assoc :error-function (mopper-fitness 8 size limit))
+		  (assoc :atom-generators (list 'if-dirty 'if-obstacle 'left 'mop 'v8a 'frog
+						(fn [] [(rand-int 8)(rand-int size)])
+						(clojush/tag-instruction-erc [:exec])
+						(clojush/tagged-instruction-erc))))]
+    (clojush/pushgp-map argmap)))
 
 		      
