@@ -3,10 +3,7 @@
 ;; Lee Spector, lspector@hampshire.edu, 2010
 
 (ns examples.lawnmower
-  (:require [clojush]
-	    [clojure.contrib.math])
-  (:use [clojush]
-    [clojure.contrib.math]))
+  (:require [clojush]))
 
 ;;;;;;;;;;;;
 ;; Koza's lawnmower problem, described in Chapter 8 of Genetic Programming II:
@@ -42,26 +39,26 @@
 (in-ns 'examples.lawnmower) 
 
 ;; Define standard stack instructions for the new intvec2D type.
-(define-registered intvec2D_pop (popper :intvec2D))
-(define-registered intvec2D_dup (duper :intvec2D))
-(define-registered intvec2D_swap (swapper :intvec2D))
-(define-registered intvec2D_rot (rotter :intvec2D))
+(clojush/define-registered intvec2D_pop (clojush/popper :intvec2D))
+(clojush/define-registered intvec2D_dup (clojush/duper :intvec2D))
+(clojush/define-registered intvec2D_swap (clojush/swapper :intvec2D))
+(clojush/define-registered intvec2D_rot (clojush/rotter :intvec2D))
 ;; Other possibilities: flush, eq, stackdepth, yank, yankdup, shove
 
 ;; Define Koza's v8a "vector addition mod 8" function. This is a modified v8a
 ;;   that takes the modulo with respect to the lawn size.
-(define-registered v8a
+(clojush/define-registered v8a
   (fn [state] 
     (if (and (not (empty? (rest (:intvec2D state))))
 	     (not (empty? (:auxiliary state))))
-      (let [lawnstate (stack-ref :auxiliary 0 state)
-	    topvec (stack-ref :intvec2D 0 state)
-            nxtvec (stack-ref :intvec2D 1 state)]
-        (->> (pop-item :intvec2D state)
-	     (pop-item :intvec2D)
-	     (push-item [(mod (+ (first topvec) (first nxtvec)) (:max-row lawnstate))
-			 (mod (+ (second topvec) (second nxtvec)) (:max-column lawnstate))]
-			:intvec2D)))
+      (let [lawnstate (clojush/stack-ref :auxiliary 0 state)
+	    topvec (clojush/stack-ref :intvec2D 0 state)
+            nxtvec (clojush/stack-ref :intvec2D 1 state)]
+        (->> (clojush/pop-item :intvec2D state)
+	     (clojush/pop-item :intvec2D)
+	     (clojush/push-item [(mod (+ (first topvec) (first nxtvec)) (:max-row lawnstate))
+				 (mod (+ (second topvec) (second nxtvec)) (:max-column lawnstate))]
+				:intvec2D)))
       state)))
 
 ; test
@@ -136,28 +133,28 @@
 ;;;;;;;;;;;;
 ;; Define actual Push instructions for lawnmower functions.
 
-(define-registered left 
+(clojush/define-registered left 
   (fn [state]
     (if-not (empty? (:auxiliary state))
-      (let [lawnstate (stack-ref :auxiliary 0 state)]
+      (let [lawnstate (clojush/stack-ref :auxiliary 0 state)]
 	(->> state
-	     (pop-item :auxiliary)
-	     (push-item (left-in lawnstate) :auxiliary)))
+	     (clojush/pop-item :auxiliary)
+	     (clojush/push-item (left-in lawnstate) :auxiliary)))
       state)))
 
-(define-registered mow 
+(clojush/define-registered mow 
   (fn [state]
     (if-not (empty? (:auxiliary state))
-      (let [lawnstate (stack-ref :auxiliary 0 state)]
+      (let [lawnstate (clojush/stack-ref :auxiliary 0 state)]
 	(->> state
-	     (pop-item :auxiliary)
-	     (push-item (mow-in lawnstate) :auxiliary)))
+	     (clojush/pop-item :auxiliary)
+	     (clojush/push-item (mow-in lawnstate) :auxiliary)))
       state)))
 
-(define-registered frog 
+(clojush/define-registered frog 
   (fn [state]
     (if-not (empty? (:auxiliary state))
-      (let [lawnstate (stack-ref :auxiliary 0 state)]    
+      (let [lawnstate (clojush/stack-ref :auxiliary 0 state)]    
 	(if (and (< (:turns lawnstate) (:turns-limit lawnstate))
 		 (< (:moves lawnstate) (:moves-limit lawnstate))
 		 (not (empty? (:intvec2D state))))
@@ -174,9 +171,9 @@
 					 (conj (:mowed lawnstate) [new-row new-column])
 					 (:mowed lawnstate)))]
 	    (->> state
-		 (pop-item :intvec2D)
-		 (pop-item :auxiliary)
-		 (push-item new-lawnstate :auxiliary)))
+		 (clojush/pop-item :intvec2D)
+		 (clojush/pop-item :auxiliary)
+		 (clojush/push-item new-lawnstate :auxiliary)))
 	  state))
       state)))
 
@@ -195,34 +192,48 @@
                 (:mowed 
                   (first 
                     (:auxiliary
-                      (run-push program 
-                        (push-item (new-lawn-state x y limit) 
-                          :auxiliary (make-push-state)) ;true
+                      (clojush/run-push program 
+                        (clojush/push-item (new-lawn-state x y limit) 
+                          :auxiliary (clojush/make-push-state)) ;true
 			))))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; code for actual runs
 
 ;; standard 8x8 lawnmower problem
-#_(pushgp
-  :error-function (lawnmower-fitness 8 8 100)
-  :atom-generators (list 'left 'mow 'v8a 'frog (fn [] [(rand-int 8) (rand-int 8)]))
-  :mutation-probability 0.3
-  :crossover-probability 0.3
-  :simplification-probability 0.3
-  :reproduction-simplifications 10
-  :max-points 200
-  :evalpush-limit 1000)
+;; #_(pushgp
+;;   :error-function (lawnmower-fitness 8 8 100)
+;;   :atom-generators (list 'left 'mow 'v8a 'frog (fn [] [(rand-int 8) (rand-int 8)]))
+;;   :mutation-probability 0.3
+;;   :crossover-probability 0.3
+;;   :simplification-probability 0.3
+;;   :reproduction-simplifications 10
+;;   :max-points 200
+;;   :evalpush-limit 1000)
 
 ;; standard 8x8 lawnmower problem but with tags
-(pushgp
-  :error-function (lawnmower-fitness 8 8 100)
-  :atom-generators (list 'left 'mow 'v8a 'frog (fn [] [(rand-int 8) (rand-int 8)])
-                     (tag-instruction-erc [:exec] 1000)
-                     (tagged-instruction-erc 1000))
-  :mutation-probability 0.3
-  :crossover-probability 0.3
-  :simplification-probability 0.3
-  :reproduction-simplifications 10
-  :max-points 200
-  :evalpush-limit 1000)
+;; #_(pushgp
+;;   :error-function (lawnmower-fitness 8 8 100)
+;;   :atom-generators (list 'left 'mow 'v8a 'frog (fn [] [(rand-int 8) (rand-int 8)])
+;;                      (tag-instruction-erc [:exec])
+;;                      (tagged-instruction-erc))
+;;   :use-indirection true
+;;   :mutation-probability 0.3
+;;   :crossover-probability 0.3
+;;   :simplification-probability 0.3
+;;   :reproduction-simplifications 10
+;;   :max-points 200
+;;   :evalpush-limit 1000)
+
+(defn run [args]
+  (let [size (or (:size args) 8)
+	limit (or (:move-limit args) 100)
+	argmap (-> args
+		   (assoc :max-points (* 10 limit))
+		   (assoc :eval-push-limit (* 10 limit))
+		   (assoc :error-function (lawnmower-fitness 8 size limit))
+		   (assoc :atom-generators (list 'left 'mow 'frog 'v8a 
+						 (fn [] [(rand-int 8)(rand-int size)])
+						 (clojush/tag-instruction-erc [:exec])
+						 (clojush/tagged-instruction-erc))))]
+    (clojush/pushgp-map argmap)))

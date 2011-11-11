@@ -9,10 +9,7 @@
 ;; This version was written by Brian Martin in 2010-2011.
 
 (ns examples.dsoar
-  (:require [clojush]
-	    [clojure.contrib.math])
-  (:use [clojush] 
-    [clojure.contrib.math]))
+  (:require [clojush]))
 
 (in-ns 'clojush)
 
@@ -51,21 +48,21 @@
                 12 [#{[5 6] [0 2] [0 5] [9 0] [8 0] [10 2] [9 5] [10 6] [7 4]}
                     #{[6 6] [1 4] [0 4] [9 1] [7 0] [8 3] [11 6] [5 1] [6 4]}]})
 
-(define-registered intvec2D_pop (popper :intvec2D))
-(define-registered intvec2D_dup (duper :intvec2D))
-(define-registered intvec2D_swap (swapper :intvec2D))
-(define-registered intvec2D_rot (rotter :intvec2D))
+(clojush/define-registered intvec2D_pop (clojush/popper :intvec2D))
+(clojush/define-registered intvec2D_dup (clojush/duper :intvec2D))
+(clojush/define-registered intvec2D_swap (clojush/swapper :intvec2D))
+(clojush/define-registered intvec2D_rot (clojush/rotter :intvec2D))
 
-(define-registered v8a
+(clojush/define-registered v8a
   (fn [state] 
     (if (and (not (empty? (rest (:intvec2D state))))
           (not (empty? (:auxiliary state))))
-      (let [floorstate (stack-ref :auxiliary 0 state)
-            topvec (stack-ref :intvec2D 0 state)
-            nxtvec (stack-ref :intvec2D 1 state)]
-        (->> (pop-item :intvec2D state)
-          (pop-item :intvec2D)
-          (push-item [(mod (+ (first topvec) (first nxtvec)) (:max-row floorstate))
+      (let [floorstate (clojush/stack-ref :auxiliary 0 state)
+            topvec (clojush/stack-ref :intvec2D 0 state)
+            nxtvec (clojush/stack-ref :intvec2D 1 state)]
+        (->> (clojush/pop-item :intvec2D state)
+          (clojush/pop-item :intvec2D)
+          (clojush/push-item [(mod (+ (first topvec) (first nxtvec)) (:max-row floorstate))
                       (mod (+ (second topvec) (second nxtvec)) (:max-column floorstate))]
             :intvec2D)))
       state)))
@@ -145,54 +142,54 @@
 
 (defn if-obstacle-in
   [push-state]
-  (let [floor-state (top-item :auxiliary push-state)
-        A (top-item :exec push-state)
-        B (top-item :exec (pop-item :exec push-state))]
+  (let [floor-state (clojush/top-item :auxiliary push-state)
+        A (clojush/top-item :exec push-state)
+        B (clojush/top-item :exec (clojush/pop-item :exec push-state))]
     (if (and (not= :no-stack-item A)
              (not= :no-stack-item B))
       (if (obstacle? (loc-ahead floor-state) floor-state)
-        (->> push-state (pop-item :exec)
-                        (pop-item :exec)
-                        (push-item A :exec))
-        (pop-item :exec push-state))
+        (->> push-state (clojush/pop-item :exec)
+                        (clojush/pop-item :exec)
+                        (clojush/push-item A :exec))
+        (clojush/pop-item :exec push-state))
       push-state)))
 
 (defn if-dirty-in
   [push-state]
-  (let [floor-state (top-item :auxiliary push-state)
-        A (top-item :exec push-state)
-        B (top-item :exec (pop-item :exec push-state))]
+  (let [floor-state (clojush/top-item :auxiliary push-state)
+        A (clojush/top-item :exec push-state)
+        B (clojush/top-item :exec (clojush/pop-item :exec push-state))]
     (if (and (not= :no-stack-item A)
              (not= :no-stack-item B))
       (if (dirty? (loc-ahead floor-state) floor-state)
-        (->> push-state (pop-item :exec)
-                   (pop-item :exec)
-                   (push-item A :exec))
-        (pop-item :exec push-state))
+        (->> push-state (clojush/pop-item :exec)
+                   (clojush/pop-item :exec)
+                   (clojush/push-item A :exec))
+        (clojush/pop-item :exec push-state))
       push-state)))
 
-(define-registered left
+(clojush/define-registered left
   (fn [state]
     (if-not (empty? (:auxiliary state))
-      (let [floor-state (stack-ref :auxiliary 0 state)]
+      (let [floor-state (clojush/stack-ref :auxiliary 0 state)]
 	(->> state
-	     (pop-item :auxiliary)
-	     (push-item (left-in floor-state) :auxiliary)))
+	     (clojush/pop-item :auxiliary)
+	     (clojush/push-item (left-in floor-state) :auxiliary)))
       state)))
 
-(define-registered mop
+(clojush/define-registered mop
   (fn [state]
     (if-not (empty? (:auxiliary state))
-      (let [floor-state (stack-ref :auxiliary 0 state)]
+      (let [floor-state (clojush/stack-ref :auxiliary 0 state)]
 	(->> state
-	     (pop-item :auxiliary)
-	     (push-item (mop-in floor-state) :auxiliary)))
+	     (clojush/pop-item :auxiliary)
+	     (clojush/push-item (mop-in floor-state) :auxiliary)))
       state)))
 
-(define-registered frog 
+(clojush/define-registered frog 
   (fn [state]
     (if-not (empty? (:auxiliary state))
-      (let [floorstate (stack-ref :auxiliary 0 state)]    
+      (let [floorstate (clojush/stack-ref :auxiliary 0 state)]    
         (if (and (< (:turns floorstate) (:turns-limit floorstate))
               (< (:moves floorstate) (:moves-limit floorstate))
               (not (empty? (:intvec2D state))))
@@ -203,9 +200,9 @@
                              (:max-column floorstate))]
             (if-not (obstacle? [new-row new-column] state)	   
               (->> state
-                (pop-item :intvec2D)
-                (pop-item :auxiliary)
-                (push-item (assoc floorstate
+                (clojush/pop-item :intvec2D)
+                (clojush/pop-item :auxiliary)
+                (clojush/push-item (assoc floorstate
                              :moves (inc (:moves floorstate))
                              :row new-row
                              :column new-column
@@ -217,13 +214,13 @@
           state))
       state)))
 
-(define-registered if-obstacle
+(clojush/define-registered if-obstacle
   (fn [state]
     (if-not (empty? (:auxiliary state))
       (if-obstacle-in state)
       state)))
 
-(define-registered if-dirty
+(clojush/define-registered if-dirty
   (fn [state]
     (if-not (empty? (:auxiliary state))
       (if-dirty-in state)
@@ -243,9 +240,9 @@
               (:mopped
                 (first
                   (:auxiliary
-                    (run-push program
-                      (push-item (new-floor-state x y limit i)
-                        :auxiliary (make-push-state)) ;true
+                    (clojush/run-push program
+                      (clojush/push-item (new-floor-state x y limit i)
+                        :auxiliary (clojush/make-push-state)) ;true
 		      )))))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -264,15 +261,30 @@
   :evalpush-limit 1000)
 
 ;; standard 8x8 dsoar problem but with tags
-(pushgp
+#_(pushgp
   :error-function (mopper-fitness 8 8 100)
   :atom-generators (list 'if-dirty 'if-obstacle 'left 'mop 'v8a 'frog
                      (fn [] [(rand-int 8) (rand-int 8)])
-                     (tag-instruction-erc [:exec] 1000)
-                     (tagged-instruction-erc 1000))
+                     (tag-instruction-erc [:exec])
+                     (tagged-instruction-erc))
   :mutation-probability 0.3
   :crossover-probability 0.3
   :simplification-probability 0.3
   :reproduction-simplifications 10
   :max-points 200
   :evalpush-limit 1000)
+
+(defn run [args]
+  (let [size (or (:size args) 4)
+       limit (or (:move-limit args) 50)
+       argmap (-> args
+		  (assoc :max-points (* 10 limit))
+		  (assoc :eval-push-limit (* 10 limit))
+		  (assoc :error-function (mopper-fitness 8 size limit))
+		  (assoc :atom-generators (list 'if-dirty 'if-obstacle 'left 'mop 'v8a 'frog
+						(fn [] [(rand-int 8)(rand-int size)])
+						(clojush/tag-instruction-erc [:exec])
+						(clojush/tagged-instruction-erc))))]
+    (clojush/pushgp-map argmap)))
+
+		      
