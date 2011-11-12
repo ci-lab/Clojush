@@ -51,7 +51,6 @@
 (def maintain-histories true) ;; histories are lists of total-error values for ancestors
 (def maintain-ancestors false) ;; if true save all ancestors in each individual (costly)
 (def print-ancestors-of-solution false)
-(def tag-limit (java.lang.Integer/MAX_VALUE))
 
 ;; The following globals require values because they are used in Push instructions but they
 ;; may be reset by arguments to pushgp or other systems that use Push.
@@ -59,14 +58,16 @@
 (def global-max-points-in-program (atom 100))
 (def global-evalpush-limit (atom 150))
 (def global-evalpush-time-limit (atom 0)) ;; in nanoseconds, 0 => no time limit
+(def global-reuse-errors (atom true))
+
 (def global-node-selection-method (atom :unbiased))
 (def global-node-selection-leaf-probability (atom 0.1))
 (def global-node-selection-tournament-size (atom 2))
-(def global-pop-when-tagging (atom true))
-(def global-reuse-errors (atom true))
+
+(def global-tag-limit (atom 1000))
 (def global-use-indirect-tagging (atom false))
-(def global-agent-output (atom (list)))
-(def global-tagging-method (atom :embedded))
+(def global-pop-when-tagging (atom true))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; random code generator
 
@@ -1422,7 +1423,8 @@ acting as a no-op if the movement would produce an error."
     (if (empty? (:zip state))
       state
       (let [result (ignore-errors (move-fn (top-item :zip state)))]
-        (if (or (nil? result) (not (vector? result)))
+        (if (or (nil? result) (not (vector? result))
+                (nil? (zip/node result)))
           state
           (push-item result :zip (pop-item :zip state)))))))
 
@@ -1554,36 +1556,32 @@ acting as a no-op if the movement would produce an error."
 (defn indirect-tag?
   "Predicate to check if a tag is indirect."
   [tag]
-  (cond (= @global-tagging-method :codestrings) false
-	(> tag tag-limit) true
-	:else false))
+  (neg? tag))
 
-(declare handle-indirection)
+(def handle-indirection nil)
 
 (defn closest-association
   "Returns the key-val pair for the closest match to the given tag
 in the given state."
   [tag state]
-  (let [tag (if (indirect-tag? tag)
-	      (handle-indirection tag state)
-	      tag)]
-    (loop [associations (conj (vec (:tag state)) (first (:tag state)))] ;; conj does wrap
-      (if (or (empty? (rest associations))
-	      (<= (compare tag (ffirst associations)) 0))
-	;; (<= tag (ffirst associations)))
-	(first associations)
-	(recur (rest associations))))))
+  (loop [associations (conj (vec (:tag state)) (first (:tag state)))] ;; conj does wrap
+    (if (or (empty? (rest associations))
+          (<= tag (ffirst associations)))
+      (first associations)
+      (recur (rest associations)))))
 
 (def handle-indirection
-     ;; "Convert an indirect tag into a direct tag."
-     (fn handle-indirection
-       [tag state]
-       (let [actual-tag (- tag tag-limit)
-	     tagged-value (closest-association actual-tag state)]
-	 (or (when tagged-value (mod (hash tagged-value) tag-limit))
-	     0)))); We can return an arbitrary tag because at this point we know the tag space is empty. closest-association will handle the exception.
+;;  "Convert an indirect tag into a direct tag."
+  (fn handle-indirection
+    [tag state]
+    (if-not (indirect-tag? tag)
+      tag
+      (let [actual-tag (math/abs tag)
+            tagged-value (closest-association actual-tag state)]    
+        (or (when tagged-value (mod (hash tagged-value) @global-tag-limit))
+            0))))); We can return an arbitrary tag because at this point we know the tag space is empty. closest-association will handle the exception.
 
-(defn handle-embedded-tag-instruction
+(defn handle-tag-instruction
   "Executes the tag instruction i in the state. Tag instructions take one of
 the following forms:
   tag_<type>_<number> 
@@ -1601,209 +1599,71 @@ the following forms:
   [i state]
   (let [iparts (string/split (name i) #"_")]
     (cond
-     ;; if it's of the form tag_<type>_<number>: CREATE TAG/VALUE ASSOCIATION
-     (= (first iparts) "tag")
-     (let [source-type (keyword (nth iparts 1))
-	   the-tag (read-string (nth iparts 2))]
-       (if (empty? (source-type state))
-	 state
-	 ((if @global-pop-when-tagging pop-item (fn [type state] state))
-	  source-type
-	  (assoc state :tag (assoc (or (:tag state) (sorted-map))
-			      the-tag
-			      (first (source-type state)))))))
-     ;; if it's of the form untag_<number>: REMOVE TAG ASSOCIATION
-     (= (first iparts) "untag")
-     (if (empty? (:tag state))
-       state
-       (let [the-tag (read-string (nth iparts 1))]
-	 (assoc state :tag (dissoc (:tag state) (first (closest-association the-tag state))))))
-     ;; else it must be of the form tagged_<number> -- PUSH VALUE
-     :else
-     (if (empty? (:tag state))
-       state ;; no-op if no associations
-       (if (= (nth iparts 1) "code") ;; it's tagged_code_<number>
-	 (let [the-tag (read-string (nth iparts 2))]
-	   (push-item (second (closest-association the-tag state)) :code state))
-	 (let [the-tag (read-string (nth iparts 1))] ;; it's just tagged_<number>, result->exec
-	   (push-item (second (closest-association the-tag state)) :exec state)))))))
-
-(defn handle-stack-tag-instruction
-  "Executes the tag instruction i in the state. Tag value is taken from
-the key stack. Tag instructions take one of
-the following forms:
-tag_<type>
-create tag/value association, with the value taken from the stack
-of the given type
-untag
-remove the association for the closest-matching tag
-tagged
-push the value associated with the closest-matching tag onto the
-exec stack (or no-op if no associations).
-tagged_code
-push the value associated with the closest-matching tag onto the
-code stack (or no-op if no associations).
-"
-  [i state]
-  (let [iparts (string/split (name i) #"_")]
-    (if (and (= (first iparts) "tag") (= (count iparts) 3)) ;; if it's of the form tag_<type>_<number>: CREATE TAG/VALUE ASSOCIATION
-      (let [source-type (keyword (str iparts 1))
-	    the-tag (read-string (last iparts))]
-	(if (empty? (source-type state))
-	  state
-	  ((if @global-pop-when-tagging pop-item (fn [type state] state))
-	   source-type
-	   (assoc state :tag (assoc (or (:tag state) (sorted-map))
-			       the-tag
-			       (first (source-type state)))))))
-      (let [the-tag (second (string/split (str (top-item :key state)) #":"))
-	    state (pop-item :key state)]
-	(if (empty? (:key state))
-	  state
-	  (cond
-	   ;; if it's of the form tag_<type> and there is an item on the key stack: CREATE TAG/key ASSOCIATION
-	   (= (first iparts) "tag")
-	   (let [source-type (keyword (str iparts 1))]
-	     (if (empty? (source-type state))
-	       state
-	       ((if @global-pop-when-tagging pop-item (fn [type state] state))
-		source-type
-		(assoc state :tag (assoc (or (:tag state) (sorted-map))
-				    the-tag
-				    (first (source-type state)))))))
-	   ;; if it's of the form untag_<number>: REMOVE TAG ASSOCIATION
-	   (= (first iparts) "untag")
-	   (if (empty? (:tag state))
-	     state
-	     (assoc state :tag (dissoc (:tag state) (first (closest-association the-tag state)))))
-	   ;; else it must be of the form tagged_<number> -- PUSH VALUE
-	   :else
-	   (if (empty? (:tag state))
-	     state ;; no-op if no associations
-	     (if (> 1 (count iparts))
-	       (push-item (second (closest-association the-tag state)) :code state)
-	       (push-item (second (closest-association the-tag state)) :exec state)))))))))
-
-(defn handle-codestrings-tag-instruction
-  "Executes the tag instruction i in the state. Tag value is the string
-representation of the next item on the exec stack. Tag instructions take
-one of the following forms:
-tag_<type>
-create tag/value association, with the value taken from the stack
-of the given type
-untag
-remove the association for the closest-matching tag
-tagged
-push the value associated with the closest-matching tag onto the
-exec stack (or no-op if no associations).
-tagged_code
-push the value associated with the closest-matching tag onto the
-code stack (or no-op if no associations).
-"
-  [i state]
-  (if (empty? (:exec state))
-    state
-    (let [iparts (string/split (name i) #"_")
-	  the-tag (second (string/split (str (top-item :exec state)) #":"))
-	  state (pop-item :exec state)]
-      (cond
-       ;; if it's of the form tag_<type>_<number>: CREATE TAG/VALUE ASSOCIATION
-       (= (first iparts) "tag")
-       (let [source-type (keyword (str iparts 1))]
-	 (if (empty? (source-type state))
-	   state
-	   ((if @global-pop-when-tagging pop-item (fn [type state] state))
-	    source-type
-	    (assoc state :tag (assoc (or (:tag state) (sorted-map))
-				the-tag
-				(first (source-type state)))))))
-       ;; if it's of the form untag_<number>: REMOVE TAG ASSOCIATION
-       (= (first iparts) "untag")
-       (if (empty? (:tag state))
-	 state
-	 (assoc state :tag (dissoc (:tag state) (first (closest-association the-tag state)))))
-       ;; else it must be of the form tagged_<number> -- PUSH VALUE
-       :else
-       (if (empty? (:tag state))
-	 state ;; no-op if no associations
-	 (if (> 1 (count iparts))
-	   (push-item (second (closest-association the-tag state)) :code state)
-	   (push-item (second (closest-association the-tag state)) :exec state)))))))
-
-(defn handle-tag-instruction
-  "Use the globally defined tag method."
-  [i state]
-  (cond
-   (= @global-tagging-method :embedded) (handle-embedded-tag-instruction i state)
-   (= @global-tagging-method :stack) (handle-stack-tag-instruction i state)
-   (= @global-tagging-method :codestrings) (handle-codestrings-tag-instruction i state)))
-
-;; For use with embedded tags
-(defn untag-instruction-erc
-  "Returns a function which, when called on no arguments, returns a symbol of the form
-untag_<number> where number is in the range from 0 to the specified tag-limit (exclusive)."
-  []
-  (fn [] (symbol (str "untag_"
-		      (str (rand-int (* (if @global-use-indirect-tagging 2 1) tag-limit)))))))
-
-(defn tagged-instruction-erc
-  "Returns a function which, when called on no arguments, returns a symbol of the form
-tagged_<number> where number is in the range from 0 to the tag-limit (exclusive)."
-  []
-  (fn [] (symbol (str "tagged_"
-		      (str (rand-int (* (if @global-use-indirect-tagging 2 1) tag-limit)))))))
-
-(defn tagged-code-instruction-erc
-  "Returns a function which, when called on no arguments, returns a symbol of the form
-tagged_code_<number> where number is in the range from 0 to the tag-limit (exclusive)."
-  []
-  (fn [] (symbol (str "tagged_code_"
-		      (str (rand-int (* (if @global-use-indirect-tagging 2 1) tag-limit)))))))
+      ;; if it's of the form tag_<type>_<number>: CREATE TAG/VALUE ASSOCIATION
+      (= (first iparts) "tag") 
+      (let [source-type (read-string (str ":" (nth iparts 1)))
+            the-tag (handle-indirection (read-string (nth iparts 2)) state)]
+        (if (empty? (source-type state))
+          state
+          ((if @global-pop-when-tagging pop-item (fn [type state] state))
+            source-type
+            (assoc state :tag (assoc (or (:tag state) (sorted-map))
+                                the-tag 
+                                (first (source-type state)))))))
+      ;; if it's of the form untag_<number>: REMOVE TAG ASSOCIATION
+      (= (first iparts) "untag")
+      (if (empty? (:tag state))
+        state
+        (let [the-tag (handle-indirection (read-string (nth iparts 1)) state)]
+          (assoc state :tag (dissoc (:tag state) (first (closest-association the-tag state))))))
+      ;; else it must be of the form tagged_<number> -- PUSH VALUE
+      :else
+      (if (empty? (:tag state))
+        state ;; no-op if no associations
+        (if (= (nth iparts 1) "code") ;; it's tagged_code_<number>
+          (let [the-tag (handle-indirection (read-string (nth iparts 2)) state)]
+            (push-item (second (closest-association the-tag state)) :code state))
+          (let [the-tag (handle-indirection (read-string (nth iparts 1)) state)] ;; it's just tagged_<number>, result->exec
+            (push-item (second (closest-association the-tag state)) :exec state)))))))
 
 (defn tag-instruction-erc
   "Returns a function which, when called on no arguments, returns a symbol of the form
-tag_<type>_<number> where type is one of the specified types and number is in the range
-from 0 to the tag-limit (exclusive)."
+tag_<type>_<number> where type is one of the specified types and number is in the range 
+from 0 to the global tag limit (exclusive)."
   [types]
   (fn [] (symbol (str "tag_"
-		      (name (rand-nth types))
-		      "_"
-		      (str (rand-int (* (if @global-use-indirect-tagging 2 1) tag-limit)))))))
+                   (name (rand-nth types))
+                   "_"
+                   (str (if @global-use-indirect-tagging
+                          (- (lrand-int (* 2 @global-tag-limit)) @global-tag-limit)
+                          (lrand-int @global-tag-limit)))))))
 
-;; For stack-based tags
-(defn stack-tag-instruction-erc
+(defn untag-instruction-erc
   "Returns a function which, when called on no arguments, returns a symbol of the form
-tag_<type>_<number> where type is one of the specified types and number is in the range
-from 0 to the tag-limit (exclusive)."
-  [types]
-  (fn [] (symbol (str "tag_"
-		      (name (rand-nth types))))))
-
-(defn key-erc
-  "Return an ephemeral random constant key generated based upon the tag-limit."
+untag_<number> where number is in the range from 0 to the specified limit (exclusive)."
   []
-  (fn [] (keyword (str (lrand-int (* (if @global-use-indirect-tagging 2 1) tag-limit))))))
+  (fn [] (symbol (str "untag_"
+                   (str (if @global-use-indirect-tagging
+                          (- (lrand-int (* 2 @global-tag-limit)) @global-tag-limit)
+                          (lrand-int @global-tag-limit)))))))
 
-;; For use with stack-based and code-based tags
-(register-instruction 'untag)
-(register-instruction 'tagged)
-(register-instruction 'tagged_code)
-
-(defn stack-keytag-instruction-erc
+(defn tagged-instruction-erc
   "Returns a function which, when called on no arguments, returns a symbol of the form
-tag_<type>_<number> where type is one of the specified types and number is in the range
-from 0 to the tag-limit (exclusive)."
-  [types]
-  (fn [] (list (keyword (str (lrand-int tag-limit)))
-	       (symbol (str "tag_"
-			    (name (rand-nth types)))))))
-
-(defn stack-keytagged-instruction-erc
-  "Returns a function which, when called on no arguments, returns a symbol of the form
-tagged_<number> where number is in the range from 0 to the tag-limit (exclusive)."
+tagged_<number> where number is in the range from 0 to the specified limit (exclusive)."
   []
-  (fn [] (list (keyword (str (lrand-int tag-limit)))
-	       'tagged)))
+  (fn [] (symbol (str "tagged_"
+                   (str (if @global-use-indirect-tagging
+                          (- (lrand-int (* 2 @global-tag-limit)) @global-tag-limit)
+                          (lrand-int @global-tag-limit)))))))
+
+(defn tagged-code-instruction-erc
+  "Returns a function which, when called on no arguments, returns a symbol of the form
+tagged_code_<number> where number is in the range from 0 to the specified limit (exclusive)."
+  []
+  (fn [] (symbol (str "tagged_code_"
+                   (str (if @global-use-indirect-tagging
+                          (- (lrand-int (* 2 @global-tag-limit)) @global-tag-limit)
+                          (lrand-int @global-tag-limit)))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; tagged-code macros
@@ -1821,49 +1681,45 @@ call expanded on the exec stack."
   (if (and (not (empty? (:argument_tags i))) (empty? (:tag state)))
     state
     (assoc state :exec
-	   (concat (concat
-		    ;; possibly grab arguments from tag space and push them on the code stack
-		    (cond
-		     (= @global-tagging-method :embedded) (map #(symbol (str "tagged_code_" (str %))) (:argument_tags i))
-		     (= @global-tagging-method :stack) (mapcat #(list (keyword (str %)) 'tagged_code) (:argument_tags i)))
-		    ;; push additional args, if any
-		    (:additional_args i)
-		    ;; execute the code instruction
-		    (list (:instruction i))
-		    ;; possibly tag results
-		    (cond
-		     (= @global-tagging-method :embedded) (map #(symbol (str "tag_code_" (str %))) (:result_tags i))
-		     (= @global-tagging-method :stack) (mapcat #(list (keyword (str %)) 'tag_code) (:result_tags i)))
-		    )
-		   (:exec state)))))
+           (concat (concat
+                    ;; possibly grab arguments from tag space and push them on the code stack
+                    (map #(symbol (str "tagged_code_" (str %))) (:argument_tags i))
+                    ;; push additional args, if any
+                    (:additional_args i)
+                    ;; execute the code instruction
+                    (list (:instruction i))
+                    ;; possibly tag results
+                    (map #(symbol (str "tag_code_" (str %))) (:result_tags i))
+                    )
+                   (:exec state)))))
 
 (defn tagged-code-macro-erc
   "Returns a function which, when called on no arguments, returns a tagged-code macro,
 which is a map."
   ([instruction tag-limit num-argument-tags num-result-tags additional-arg-generator]
-     (fn [] {:tagged_code_macro true :instruction instruction
-	     :argument_tags (repeatedly num-argument-tags #(rand-int tag-limit))
-	     :additional_args (additional-arg-generator)
-	     :result_tags (repeatedly num-result-tags #(rand-int tag-limit))}))
+    (fn [] {:tagged_code_macro true :instruction instruction
+            :argument_tags (repeatedly num-argument-tags #(rand-int tag-limit))
+            :additional_args (additional-arg-generator)
+            :result_tags (repeatedly num-result-tags #(rand-int tag-limit))}))
   ([instruction tag-limit num-argument-tags num-result-tags]
-     (tagged-code-macro-erc instruction tag-limit num-argument-tags num-result-tags (fn [] ()))))
+    (tagged-code-macro-erc instruction tag-limit num-argument-tags num-result-tags (fn [] ()))))
 
 (defn abbreviate-tagged-code-macros
   "Returns a copy of program with macros abbreviated as symbols. The returned program will
 not run as-is."
   [program]
   (postwalklist (fn [item]
-		  (if (tagged-code-macro? item)
-		    (symbol (str "TC_"
-				 (:instruction item)
-				 (print-str (:argument_tags item))
-				 (print-str (:result_tags item))
-				 (if (empty? (:additional_args item))
-				   ""
-				   (print-str (:additional_args item)))))
-		    item))
-		program))
-
+                   (if (tagged-code-macro? item)
+                     (symbol (str "TC_"
+                               (:instruction item)
+                               (print-str (:argument_tags item))
+                               (print-str (:result_tags item))
+                               (if (empty? (:additional_args item)) 
+                                 "" 
+                                 (print-str (:additional_args item)))))
+                     item))
+    program))
+  
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; push interpreter
 
@@ -1920,6 +1776,20 @@ normal, or :abnormal otherwise."
                         (= trace true) (assoc execution-result
                                          :trace
                                          (cons exec-top (let [t (:trace s)] (if (seq? t) t ()))))
+			(= trace :tag) (if (tag-instruction? exec-top)
+					 (assoc execution-result
+					   :trace
+					   (let [tagged-info (string/split #"[_]" (str exec-top))
+						 tag-num (read-string (last tagged-info))
+						 type (first tagged-info)
+						 this-state (handle-tag-instruction exec-top s)
+						 [tag-ref code] (cond (= type "tagged") (closest-association tag-num this-state)
+								      (= type "tag") [(handle-indirection tag-num this-state)
+										      (top-item :code s)]
+								      :else [])]
+					     (cons (with-meta exec-top {:tag-ref tag-ref, :tagged-code code})
+						   (:trace execution-result))))
+					 execution-result)
                         (= trace :changes) (if (= execution-result s)
                                              execution-result
                                              (assoc execution-result
@@ -1957,15 +1827,16 @@ normal, or :abnormal otherwise."
 ;; Populations are vectors of agents with individuals as their states (along with error and
 ;; history information).
 
-(defrecord individual [program errors total-error history ancestors])
+(defrecord individual [program errors total-error history ancestors trace])
 
-(defn make-individual [& {:keys [program errors total-error history ancestors]
+(defn make-individual [& {:keys [program errors total-error history ancestors trace]
                           :or {program nil
-                               errors (list (java.lang.Integer/MAX_VALUE))
-                               total-error (list (java.lang.Integer/MAX_VALUE))
+                               errors nil
+                               total-error nil ;; a non-number is used to indicate no value
                                history nil
-                               ancestors nil}}]
-  (individual. program errors total-error history ancestors))
+                               ancestors nil
+			       trace nil}}]
+  (individual. program errors total-error history ancestors trace))
 
 (defn choose-node-index-with-leaf-probability
   "Returns an index into tree, choosing a leaf with probability 
@@ -2047,7 +1918,6 @@ by @global-node-selection-method."
   ([population generation error-function report-simplifications]
     (report population generation error-function report-simplifications default-problem-specific-report))
   ([population generation error-function report-simplifications problem-specific-report]
-     (newline)
     (printf "\n\n;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;")(flush)
 ;(println (map :total-error population))(flush) ;***
     (printf "\n;; -*- Report at generation %s" generation)(flush)
@@ -2066,10 +1936,7 @@ by @global-node-selection-method."
       (print "\n--- Population Statistics ---\nAverage total errors in population: ")(flush)
       (print (* 1.0 (/ (reduce + (map :total-error sorted)) (count population))))(flush)
       (printf "\nMedian total errors in population: %s"
-	      (if (> (count sorted) 1)
-		(:total-error (nth sorted (truncate (/ (count sorted) 2))))
-		(count sorted)))
-      (flush)
+              (:total-error (nth sorted (truncate (/ (count sorted) 2)))))(flush)
       (printf "\nAverage program size in population (points): %s"
               (* 1.0 (/ (reduce + (map count-points (map :program sorted)))
                         (count population))))(flush)
@@ -2077,11 +1944,20 @@ by @global-node-selection-method."
         (println "\nNumber of unique programs in population: " (count frequency-map))
         (println "Max copy number of one program: " (apply max (vals frequency-map)))
         (println "Min copy number of one program: " (apply min (vals frequency-map)))
-        (println "Median copy number: " (nth (sort (vals frequency-map)) (Math/floor (/ (count frequency-map) 2)))))
-      (flush)
-      (.println *err* (str "Generation:" generation))
-      (.println *err* (str "Agent-output:" (apply str @global-agent-output)))
-      (reset! global-agent-output (list))
+        (println "Median copy number of one program: " (nth (sort (vals frequency-map)) (Math/floor (/ (count frequency-map) 2)))))
+      (let [frequency-map (frequencies (map :errors population))]
+        (println "\nNumber of unique error vectors in population: " (count frequency-map))
+        (println "Max copy number of one error vector: " (apply max (vals frequency-map)))
+        (println "Min copy number of one error vector: " (apply min (vals frequency-map)))
+        (println "Median copy number of one error vector: " (nth (sort (vals frequency-map)) (Math/floor (/ (count frequency-map) 2)))))      
+      (let [frequency-map (frequencies (mapcat :trace population))]
+        (println "\nNumber of unique tags in population: " (count frequency-map))
+        (println "Max copy number of one tag: " (when (vals frequency-map)
+						  (apply max (vals frequency-map))))
+        (println "Min copy number of one tag: " (when (vals frequency-map)
+						  (apply min (vals frequency-map))))
+        (println "Median copy number of one tag: " (when (vals frequency-map)
+						     (nth (sort (vals frequency-map)) (Math/floor (/ (count frequency-map) 2))))))
       (printf "\n;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;\n\n")
       (flush)
       (problem-specific-report best population generation error-function report-simplifications)
@@ -2169,15 +2045,21 @@ subprogram of parent2."
   [i error-function rand-gen]
   (binding [*thread-local-random-generator* rand-gen]
     (let [p (:program i)
+	  evaluation-result (when-not (and (seq? (:errors i)) @global-reuse-errors)
+			      (error-function p))
           e (if (and (seq? (:errors i)) @global-reuse-errors)
-	      (:errors i)
-	      (error-function p))
+              (:errors i)
+              evaluation-result)
           te (if (and (number? (:total-error i)) @global-reuse-errors)
                (:total-error i)
-               (keep-number-reasonable (reduce + e)))]
+               (keep-number-reasonable (reduce + e)))]	  
+;(println te)(flush) ;***
       (make-individual :program p :errors e :total-error te 
         :history (if maintain-histories (cons te (:history i)) (:history i))
-        :ancestors (:ancestors i)))))
+        :ancestors (:ancestors i)
+	:trace (if evaluation-result
+		 (:trace (meta evaluation-result))
+		 (:trace i))))))
 
 (defn breed
   "Replaces the state of the given agent with an individual bred from the given population (pop), 
@@ -2241,8 +2123,46 @@ elimination tournaments to reach the provided target-size."
                      tournament-index-set)]
                (vec (concat (subvec population 0 victim-index)
                       (subvec population (inc victim-index)))))
-        target-size tournament-size radius))))
+             target-size tournament-size radius))))
 
+(defn pareto-tournament
+  "Return the index of an individual that lost a pareto tournament, nil if there is no loser."
+  [population radius]  
+  (let [loc1 (lrand-int (count population))
+        loc2 (if (zero? radius)
+               (lrand-int (count population))
+               (mod (+ loc1 (- (lrand-int (+ 1 (* radius 2))) radius))
+                    (count population)))
+        errs1 (:errors (nth population loc1))
+        errs2 (:errors (nth population loc2))
+        loc1-dominates? (and (reduce #(and %1 %2) (map <= errs1 errs2))
+                             (reduce #(or %1 %2) (map < errs1 errs2)))
+        loc2-dominates? (and (reduce #(and %1 %2) (map <= errs2 errs1))
+                             (reduce #(or %1 %2) (map < errs2 errs1)))]
+    (cond loc1-dominates? loc1
+          loc2-dominates? loc2
+          :else nil)))
+
+(defn pareto-decimate
+  "Returns the subset of the provided population remaining after sufficiently many
+elimination tournaments to reach near provided target-size. This is approximate
+because there is a possibility that even the entire population is non-dominated."
+  [population target-size tournament-size radius]
+  (loop [population (vec population)
+         attempts 0]
+    (if (or (<= (count population) target-size)
+            (> attempts 5))
+      population
+      (let [victims (keep identity
+                          (apply pcalls (repeat (- (count population) target-size)
+                                                #(pareto-tournament population radius))))]
+        (if (empty? victims)
+          (recur population (inc attempts))
+          (recur (vec (keep identity (apply assoc
+                                            (cons population                                         
+                                                  (interleave victims
+                                                              (repeat (count victims) nil)))))) 0))))))
+  
 (defn scaled-errors
   "A utility function for use in error functions, to implement error-scaling as described
 by Maarten Keijzer in Scaled Symbolic Regression, in Genetic Programming and Evolvable
@@ -2288,7 +2208,7 @@ example."
              evalpush-limit evalpush-time-limit node-selection-method node-selection-leaf-probability
              node-selection-tournament-size pop-when-tagging gaussian-mutation-probability 
              gaussian-mutation-per-number-mutation-probability gaussian-mutation-standard-deviation
-	     reuse-errors problem-specific-report use-indirect-tagging]
+	     reuse-errors problem-specific-report use-indirect-tagging tag-limit]
       :or {error-function (fn [p] '(0)) ;; pgm -> list of errors (1 per case)
            error-threshold 0
            population-size 1000
@@ -2320,7 +2240,8 @@ example."
            gaussian-mutation-standard-deviation 0.1
 	   reuse-errors true
 	   problem-specific-report default-problem-specific-report
-	   use-indirect-tagging false
+           use-indirect-tagging false
+           tag-limit 1000
            }}]
   ;; set globals from parameters
   (reset! global-atom-generators atom-generators)
@@ -2333,6 +2254,7 @@ example."
   (reset! global-pop-when-tagging pop-when-tagging)
   (reset! global-reuse-errors reuse-errors)
   (reset! global-use-indirect-tagging use-indirect-tagging)
+  (reset! global-tag-limit tag-limit)
   (printf "\nStarting PushGP run.\n\n") (flush)
   (print-params 
     (error-function error-threshold population-size max-points atom-generators max-generations 
@@ -2342,7 +2264,7 @@ example."
       tournament-size report-simplifications final-report-simplifications
       trivial-geography-radius decimation-ratio decimation-tournament-size evalpush-limit
       evalpush-time-limit node-selection-method node-selection-tournament-size
-      node-selection-leaf-probability pop-when-tagging reuse-errors use-indirect-tagging 
+      node-selection-leaf-probability pop-when-tagging reuse-errors use-indirect-tagging
       ))
   (printf "\nGenerating initial population...\n") (flush)
   (let [pop-agents (vec (doall (for [_ (range population-size)] 
@@ -2366,11 +2288,11 @@ example."
 ;  (when (some not ers) 
 ;    (println (map :total-error (vec (doall (map deref pop-agents)))))(flush) 
 ;    (recur (map :total-error (vec (doall (map deref pop-agents)))))))
+      
       ;; report and check for success
       (let [best (report (vec (doall (map deref pop-agents))) generation error-function 
 			 report-simplifications problem-specific-report)]
-	
-        (if (<= (:total-error best 0) error-threshold)
+        (if (<= (:total-error best) error-threshold)
           (do (printf "\n\nSUCCESS at generation %s\nSuccessful program: %s\nErrors: %s\nTotal error: %s\nHistory: %s\nSize: %s\n\n"
                 generation (not-lazy (:program best)) (not-lazy (:errors best)) (:total-error best) 
                 (not-lazy (:history best)) (count-points (:program best)))
@@ -2436,19 +2358,5 @@ of nil values in execute-instruction, do see if any instructions are introducing
    This allows one to run an example with a call from the OS shell prompt like:
        lein run examples.simple-regression"
   [& args]
-  (use (vector (symbol (first args)) :exclude ['run]))
-   (let [fname (reduce str (drop-last 1 (interleave (map #(if (= (first (str %)) \-)
-							    (reduce str (seq (drop 2 (str %))))
-							   (str %))
-							args)
-						   (repeat '-))))
-	run-args (zipmap (map #(keyword (reduce str (drop 2 %))) (take-nth 2 (rest args)))
-			 (map read-string (take-nth 2 (drop 2 args))))]
-    (with-open [out (java.io.PrintWriter. (java.io.FileOutputStream. (java.io.File. (str "output/" fname ".out"))))
-		err (java.io.PrintWriter. (java.io.FileOutputStream. (java.io.File. (str "output/" fname ".err"))))]
-      (binding [*out* out *err* err]
-	;;(def run (get (ns-publics (symbol (first args))) 'run))
-	((eval (symbol (str (first args) "/run"))) run-args)
-	(.write *out* (.toString out))
-	(.write *err* (.toString err)))))
+  (use (symbol (first args)))
   (System/exit 0))
