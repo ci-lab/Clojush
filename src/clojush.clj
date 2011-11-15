@@ -26,7 +26,7 @@
     [clojure.contrib.duck-streams :as ds]
     [clojure.contrib.io :as io]
     [clojure.walk :as walk]
-    [clojure.contrib.string :as string]))
+    [clojure.string :as string]))
 
 (import java.lang.Math)
 
@@ -1607,12 +1607,12 @@ the following forms:
      code stack (or no-op if no associations).
 "
   [i state]
-  (let [iparts (string/partition #"_" (name i))]
+  (let [iparts (string/split (name i)  #"_")]
     (cond
       ;; if it's of the form tag_<type>_<number>: CREATE TAG/VALUE ASSOCIATION
       (= (first iparts) "tag") 
-      (let [source-type (read-string (str ":" (nth iparts 2)))
-            the-tag (handle-indirection (read-string (nth iparts 4)) state)]
+      (let [source-type (read-string (str ":" (nth iparts 1)))
+            the-tag (handle-indirection (read-string (nth iparts 2)) state)]
         (if (empty? (source-type state))
           state
           ((if @global-pop-when-tagging pop-item (fn [type state] state))
@@ -1624,17 +1624,25 @@ the following forms:
       (= (first iparts) "untag")
       (if (empty? (:tag state))
         state
-        (let [the-tag (handle-indirection (read-string (nth iparts 2)) state)]
+        (let [the-tag (handle-indirection (read-string (nth iparts 1)) state)]
           (assoc state :tag (dissoc (:tag state) (first (closest-association the-tag state))))))
       ;; else it must be of the form tagged_<number> -- PUSH VALUE
       :else
       (if (empty? (:tag state))
         state ;; no-op if no associations
-        (if (= (nth iparts 2) "code") ;; it's tagged_code_<number>
-          (let [the-tag (handle-indirection (read-string (nth iparts 4)) state)]
+        (if (= (nth iparts 1) "code") ;; it's tagged_code_<number>
+          (let [the-tag (handle-indirection (read-string (nth iparts 2)) state)]
             (push-item (second (closest-association the-tag state)) :code state))
-          (let [the-tag (handle-indirection (read-string (nth iparts 2)) state)] ;; it's just tagged_<number>, result->exec
+          (let [the-tag (handle-indirection (read-string (nth iparts 1)) state)] ;; it's just tagged_<number>, result->exec
             (push-item (second (closest-association the-tag state)) :exec state)))))))
+
+(defn tag-value-erc
+  "Return a tag number between 0 and the global tag limit (exclusive) or if indirection
+is being used [-global-tag-limit, global-tag-limit]."
+  []
+  (if @global-use-indirect-tagging
+    (- (lrand-int (* 2 @global-tag-limit)) @global-tag-limit)
+    (lrand-int @global-tag-limit)))
 
 (defn tag-instruction-erc
   "Returns a function which, when called on no arguments, returns a symbol of the form
@@ -1644,36 +1652,28 @@ from 0 to the global tag limit (exclusive)."
   (fn [] (symbol (str "tag_"
                    (name (lrand-nth types))
                    "_"
-                   (str (if @global-use-indirect-tagging
-                          (- (lrand-int (* 2 @global-tag-limit)) @global-tag-limit)
-                          (lrand-int @global-tag-limit)))))))
+                   (str (tag-value-erc))))))
 
 (defn untag-instruction-erc
   "Returns a function which, when called on no arguments, returns a symbol of the form
 untag_<number> where number is in the range from 0 to the specified limit (exclusive)."
   []
   (fn [] (symbol (str "untag_"
-                   (str (if @global-use-indirect-tagging
-                          (- (lrand-int (* 2 @global-tag-limit)) @global-tag-limit)
-                          (lrand-int @global-tag-limit)))))))
+                   (str (tag-value-erc))))))
 
 (defn tagged-instruction-erc
   "Returns a function which, when called on no arguments, returns a symbol of the form
 tagged_<number> where number is in the range from 0 to the specified limit (exclusive)."
   []
   (fn [] (symbol (str "tagged_"
-                   (str (if @global-use-indirect-tagging
-                          (- (lrand-int (* 2 @global-tag-limit)) @global-tag-limit)
-                          (lrand-int @global-tag-limit)))))))
+                   (str (tag-value-erc))))))
 
 (defn tagged-code-instruction-erc
   "Returns a function which, when called on no arguments, returns a symbol of the form
 tagged_code_<number> where number is in the range from 0 to the specified limit (exclusive)."
   []
   (fn [] (symbol (str "tagged_code_"
-                   (str (if @global-use-indirect-tagging
-                          (- (lrand-int (* 2 @global-tag-limit)) @global-tag-limit)
-                          (lrand-int @global-tag-limit)))))))
+                   (str (tag-value-erc))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; tagged-code macros
@@ -1706,13 +1706,13 @@ call expanded on the exec stack."
 (defn tagged-code-macro-erc
   "Returns a function which, when called on no arguments, returns a tagged-code macro,
 which is a map."
-  ([instruction tag-limit num-argument-tags num-result-tags additional-arg-generator]
+  ([instruction num-argument-tags num-result-tags additional-arg-generator]
     (fn [] {:tagged_code_macro true :instruction instruction
-            :argument_tags (repeatedly num-argument-tags #(lrand-int tag-limit))
+            :argument_tags (repeatedly num-argument-tags tag-value-erc)
             :additional_args (additional-arg-generator)
-            :result_tags (repeatedly num-result-tags #(lrand-int tag-limit))}))
-  ([instruction tag-limit num-argument-tags num-result-tags]
-    (tagged-code-macro-erc instruction tag-limit num-argument-tags num-result-tags (fn [] ()))))
+            :result_tags (repeatedly num-result-tags tag-value-erc)}))
+  ([instruction num-argument-tags num-result-tags]
+    (tagged-code-macro-erc instruction num-argument-tags num-result-tags (fn [] ()))))
 
 (defn abbreviate-tagged-code-macros
   "Returns a copy of program with macros abbreviated as symbols. The returned program will
@@ -1789,7 +1789,7 @@ normal, or :abnormal otherwise."
 			(= trace :tag) (if (tag-instruction? exec-top)
 					 (assoc execution-result
 					   :trace
-					   (let [tagged-info (string/split #"[_]" (str exec-top))
+					   (let [tagged-info (string/split (str exec-top) #"[_]")
 						 tag-num (read-string (last tagged-info))
 						 type (first tagged-info)
 						 this-state s ;;(handle-tag-instruction exec-top s)
@@ -1968,20 +1968,6 @@ by @global-node-selection-method."
 						  (apply min (vals frequency-map))))
 	(println "Median copy number of one tag: " (when (vals frequency-map)
 						     (nth (sort (vals frequency-map)) (Math/floor (/ (count frequency-map) 2))))))
-      (let [records (->> (mapcat #(for [inst (:trace %1)]
-				    (with-meta inst (-> (meta inst)
-							(assoc :id %2)
-							(assoc :tag (count (filter (fn [i] (string/substring? "tag_" (str i))) (flatten (:program %1)))))
-							(assoc :tagged (count (filter (fn [i] (string/substring? "tagged_" (str i))) (flatten (:program %1))))))))
-				 population (iterate inc 0))
-			 (map #(list generation (:id (meta %)) % (:tag-ref (meta %))
-				     (not-lazy (:tagged-code (meta %)))
-				     (count-points (not-lazy (:tagged-code (meta %))))
-				     (:tag (meta %))(:tagged (meta %))))
-			 (frequencies))]
-	(doseq [record records]
-	  (ds/with-out-append-writer *tag-file*
-	    (println (apply str (interpose "," (concat (first record) (list (second record)))))))))
       (printf "\n;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;\n\n")
       (flush)
       (problem-specific-report best population generation error-function report-simplifications)
