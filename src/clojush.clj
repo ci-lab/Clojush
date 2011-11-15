@@ -22,7 +22,6 @@
   (:require
     [clojure.zip :as zip]
     [clojure.contrib.math :as math]
-    [clojure.contrib.duck-streams :as ds]
     [clojure.contrib.io :as io]
     [clojure.walk :as walk]
     [clojure.string :as string]))
@@ -32,9 +31,6 @@
 ;; backtrace abbreviation, to ease debugging
 (defn bt []
   (.printStackTrace *e))
-
-;;(def ^:dynamic *tag-file* nil)
-(def *tag-file* nil)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; globals
@@ -2378,8 +2374,5 @@ of nil values in execute-instruction, do see if any instructions are introducing
    This allows one to run an example with a call from the OS shell prompt like:
        lein run examples.simple-regression"
   [& args]
-  (binding [*tag-file* (io/file (str (first args) "_" (System/nanoTime)))]
-    (ds/with-out-append-writer *tag-file*
-      (println "generation,id,literal,ref.num,ref.code,ref.code.size,genotype.tag,genotype.tagged, frequency"))
-    (use (symbol (first args)))
-    (System/exit 0)))
+  (use (symbol (first args)))
+  (System/exit 0))
