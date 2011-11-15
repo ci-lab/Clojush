@@ -71,7 +71,9 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; random code generator
 
-(def thread-local-random-generator (new java.util.Random))
+;(def ^:dynamic *thread-local-random-generator* (new java.util.Random))
+
+(def ^:dynamic *thread-local-random-generator* nil)
 
 (defn lrand-int
   "Return a random integer, using the thread-local random generator, that is less than the
@@ -79,19 +81,19 @@ provided n. Arguments greater than 2^31-1 are treated as if they were 2^31-1 (21
   [n]
   (if (<= n 1)
     0
-    (if (= (type n) java.lang.Integer)
-      (. thread-local-random-generator (nextInt n))
-      (. thread-local-random-generator (nextInt 2147483647))))) ;; biggest java.lang.Integer
+    (if (integer? n)
+      (. *thread-local-random-generator* (nextInt n))
+      (. *thread-local-random-generator* (nextInt java.lang.Integer/MAX_VALUE))))) ;; biggest java.lang.Integer
 
 (defn lrand
   "Return a random float between 0 and 1 usng the thread-local random generator."
-  ([] (. thread-local-random-generator (nextFloat)))
+  ([] (. *thread-local-random-generator* (nextFloat)))
   ([n] (* n (lrand))))
 
 (defn lrand-nth
   "Return a random element of the collection."  
   [coll]
-  (nth coll (. thread-local-random-generator (nextInt (count coll)))))
+  (nth coll (. *thread-local-random-generator* (nextInt (count coll)))))
 
 (defn decompose
   "Returns a list of at most max-parts numbers that sum to number.
@@ -201,7 +203,7 @@ from the behavior in other implementations of Push.)"
   
 (defn truncate
   "Returns a truncated integer version of n."
-  [n]
+  [^:double n]
   (if (< n 0)
     (math/round (math/ceil n))
     (math/round (math/floor n))))
@@ -2048,7 +2050,7 @@ subprogram of parent2."
   "Returns the given individual with errors and total-errors, computing them if necessary."
   [i error-function rand-gen]
 ; (println "XXXXXX") (flush) ;***
-  (binding [thread-local-random-generator rand-gen]
+  (binding [*thread-local-random-generator* rand-gen]
     (let [p (:program i)
 	  evaluation-result (when-not (and (seq? (:errors i)) @global-reuse-errors)
 			      (error-function p))
@@ -2074,7 +2076,7 @@ using the given parameters."
    tournament-size reproduction-simplifications trivial-geography-radius
    gaussian-mutation-probability gaussian-mutation-per-number-mutation-probability 
    gaussian-mutation-standard-deviation]
-  (binding [thread-local-random-generator rand-gen]
+  (binding [*thread-local-random-generator* rand-gen]
     (let [n (lrand)]
       (cond 
         ;; mutation
@@ -2251,7 +2253,7 @@ example."
            tag-limit 1000
            }}]
   
-  (binding [thread-local-random-generator (java.util.Random. random-seed)]
+  (binding [*thread-local-random-generator* (java.util.Random. random-seed)]
     ;; set globals from parameters
     (reset! global-atom-generators atom-generators)
     (reset! global-max-points-in-program max-points)
@@ -2278,17 +2280,19 @@ example."
                      use-single-thread random-seed use-indirect-tagging tag-limit
                      ))
     (printf "\nGenerating initial population...\n") (flush)
-    (let [pop-agents (vec (doall (for [_ (range population-size)] 
+    (let [rand-gens (vec (doall (for [k (range population-size)]
+                                  (java.util.Random. (+ random-seed (inc k))))))
+          pop-agents (vec (doall (for [rand-gen rand-gens]
                                    ((if use-single-thread atom agent)
                                     (make-individual 
-                                     :program (random-code max-points atom-generators))
-                                    :error-handler (fn [agnt except] (println except))))))
+                                     :program (binding [*thread-local-random-generator* rand-gen]
+                                                (random-code max-points atom-generators))
+                                    :error-handler (fn [agnt except] (println except)))))))
           child-agents (vec (doall (for [_ (range population-size)]
                                      ((if use-single-thread atom agent)
                                       (make-individual)
                                       :error-handler (fn [agnt except] (println except))))))
-          rand-gens (vec (doall (for [k (range population-size)]
-                                  (java.util.Random. (+ random-seed (inc k))))))]
+          ]
       (loop [generation 0]
         (printf "\n\n-----\nProcessing generation: %s\nComputing errors..." generation) (flush)
         (dorun (map #((if use-single-thread swap! send) % evaluate-individual error-function %2) pop-agents rand-gens))
