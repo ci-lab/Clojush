@@ -22,7 +22,6 @@
   (:require
     [clojure.zip :as zip]
     [clojure.contrib.math :as math]
-    [clojure.contrib.io :as io]
     [clojure.walk :as walk]
     [clojure.string :as string]))
 
