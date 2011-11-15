@@ -22,7 +22,6 @@
   (:require
     [clojure.zip :as zip]
     [clojure.contrib.math :as math]
-    [clojure.contrib.seq-utils :as seq-utils]
     [clojure.contrib.duck-streams :as ds]
     [clojure.contrib.io :as io]
     [clojure.walk :as walk]
@@ -1350,7 +1349,7 @@ the code stack."
         (pop-item :code (pop-item :code state)))
       state)))
 
-(define-registered code_position
+#_(define-registered code_position
   (fn [state]
     (if (not (empty? (rest (:code state))))
       (push-item (or (first (seq-utils/positions #{(stack-ref :code 1 state)}
